@@ -294,12 +294,27 @@ end
 -- A freshly loaded difficulty only changes pin visibility when it flips that
 -- comparison; rebuilding the map for every title load restarts the sliced
 -- paint and makes the pins flash.
-local function LevelFiltered(questLevel, data, playerLevel)
+-- True when a quest counts as "low-level" and should be hidden.
+-- Low-level = at least trivialLevelGap levels below the player.
+--   * "Show low-level quests" off: every low-level quest is hidden.
+--   * "Show low-level quests" on + minimum-level sub-filter on: low-level
+--     quests are still shown, but only if their level >= trivialMinLevel.
+local function HiddenAsLowLevel(level, playerLevel)
+    if not level then
+        return false
+    end
+    if (playerLevel - level) < (ns.GetOption("trivialLevelGap") or 9) then
+        return false
+    end
     if not ns.GetOption("showTrivial") then
-        local level = questLevel or (data and data.minLevel)
-        if level and (playerLevel - level) >= (ns.GetOption("trivialLevelGap") or 9) then
-            return true
-        end
+        return true
+    end
+    return ns.GetOption("trivialMinLevelEnabled") and level < (ns.GetOption("trivialMinLevel") or 48) or false
+end
+
+local function LevelFiltered(questLevel, data, playerLevel)
+    if HiddenAsLowLevel(questLevel or (data and data.minLevel), playerLevel) then
+        return true
     end
     local highLevelGap = ns.GetOption("highLevelGap")
     if type(highLevelGap) == "number" and highLevelGap < HIGH_LEVEL_GAP_MAX then
@@ -931,7 +946,7 @@ local function IsTrivial(questID, data)
         return false, false
     end
     local playerLevel = UnitLevel("player") or 1
-    if (playerLevel - questLevel) >= ns.GetOption("trivialLevelGap") then
+    if HiddenAsLowLevel(questLevel, playerLevel) then
         return true, true
     end
     return false, true
@@ -1070,11 +1085,9 @@ function ns.IsQuestAvailable(questID, data)
         return false, "low-level"
     end
 
-    if not ns.GetOption("showTrivial") then
-        local trivial, reliable = IsTrivial(questID, data)
-        if reliable and trivial then
-            return false, "trivial"
-        end
+    local trivial, reliable = IsTrivial(questID, data)
+    if reliable and trivial then
+        return false, "trivial"
     end
 
     local highLevelGap = ns.GetOption("highLevelGap") or HIGH_LEVEL_GAP_MAX

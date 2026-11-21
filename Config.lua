@@ -11,6 +11,8 @@ ns.defaults = {
     waypointProvider = "blizzard",
     showTrivial = false,
     trivialLevelGap = 9,
+    trivialMinLevelEnabled = false,
+    trivialMinLevel = 48,
     highLevelGap = 15,
     showNormal = true,
     showClass = true,
@@ -78,6 +80,7 @@ local pinCategoryOptions = {
 }
 local MIRROR_CVAR = "ForeverQuestPinsSettings"
 local TRIVIAL_GAP_MIN, TRIVIAL_GAP_MAX = 3, 15
+local TRIVIAL_MIN_LEVEL_MIN, TRIVIAL_MIN_LEVEL_MAX = 1, 60
 local HIGH_LEVEL_GAP_MIN, HIGH_LEVEL_GAP_MAX = 3, 15
 local worldMapDropdownHooked = false
 
@@ -93,6 +96,9 @@ local function NormalizeNumber(key, value)
     end
     if key == "trivialLevelGap" then
         return math.max(TRIVIAL_GAP_MIN, math.min(TRIVIAL_GAP_MAX, math.floor(value + 0.5)))
+    end
+    if key == "trivialMinLevel" then
+        return math.max(TRIVIAL_MIN_LEVEL_MIN, math.min(TRIVIAL_MIN_LEVEL_MAX, math.floor(value + 0.5)))
     end
     if key == "highLevelGap" then
         return math.max(HIGH_LEVEL_GAP_MIN, math.min(HIGH_LEVEL_GAP_MAX, math.floor(value + 0.5)))
@@ -159,6 +165,10 @@ local function DecodeMirror()
     local trivialLevelGap = tonumber(text:match("trivialLevelGap=(%d+)"))
     if trivialLevelGap and trivialLevelGap >= TRIVIAL_GAP_MIN and trivialLevelGap <= TRIVIAL_GAP_MAX then
         mirror.trivialLevelGap = trivialLevelGap
+    end
+    local trivialMinLevel = tonumber(text:match("trivialMinLevel=(%d+)"))
+    if trivialMinLevel and trivialMinLevel >= TRIVIAL_MIN_LEVEL_MIN and trivialMinLevel <= TRIVIAL_MIN_LEVEL_MAX then
+        mirror.trivialMinLevel = trivialMinLevel
     end
     local highLevelGap = tonumber(text:match("highLevelGap=(%d+)"))
     if highLevelGap and highLevelGap >= HIGH_LEVEL_GAP_MIN and highLevelGap <= HIGH_LEVEL_GAP_MAX then
@@ -276,6 +286,7 @@ local function SaveMirror(db)
         .. tostring(db.autoAcceptMinLevelOffset or ns.defaults.autoAcceptMinLevelOffset)
     parts[#parts + 1] = "iconScale=" .. tostring(db.iconScale or 100)
     parts[#parts + 1] = "trivialLevelGap=" .. tostring(db.trivialLevelGap or ns.defaults.trivialLevelGap)
+    parts[#parts + 1] = "trivialMinLevel=" .. tostring(db.trivialMinLevel or ns.defaults.trivialMinLevel)
     parts[#parts + 1] = "highLevelGap=" .. tostring(db.highLevelGap or ns.defaults.highLevelGap)
     parts[#parts + 1] = "trackerSort=" .. tostring(db.trackerSort or ns.defaults.trackerSort)
     parts[#parts + 1] = "trackerFilter=" .. tostring(db.trackerFilter or ns.defaults.trackerFilter)
@@ -705,6 +716,7 @@ function ns.SlashCommand(msg)
         print(L["  /fqp trivial  Toggle low-level/trivial pins (off by default)"])
         print((L["  /fqp trivial <%d-%d> Hide quests this many levels below you (default %d)"]):format(
             TRIVIAL_GAP_MIN, TRIVIAL_GAP_MAX, ns.defaults.trivialLevelGap))
+        print("  /fqp trivialmin [level] Only show low-level quests at or above this level (default 48)")
         print((L["  /fqp highlevel <%d-%d> Hide quests this many levels above you (default %d means show all)"]):format(
             HIGH_LEVEL_GAP_MIN, HIGH_LEVEL_GAP_MAX, ns.defaults.highLevelGap))
         print(L["  /fqp repeatable Toggle repeatable quest pins (on by default)"])
@@ -813,6 +825,21 @@ function ns.SlashCommand(msg)
         Print((L["Low-level pins: hiding quests %d+ levels below you."]):format(ns.GetOption("trivialLevelGap")))
         if ns.GetOption("showTrivial") then
             Print(L["Low-level pins are currently shown. Type /fqp trivial to hide them."])
+        end
+        return
+    end
+    if msg == "trivialmin" then
+        ToggleFlag("trivialMinLevelEnabled", "Low-level quest minimum")
+        return
+    end
+    local trivialMin = msg:match("^trivialmin%s+(%d+)$")
+    if trivialMin then
+        ns.SetOption("trivialMinLevel", trivialMin)
+        ns.SetOption("trivialMinLevelEnabled", true)
+        Print(("Low-level pins: only showing low-level quests of level %d or higher."):format(
+            ns.GetOption("trivialMinLevel")))
+        if not ns.GetOption("showTrivial") then
+            Print(L["Low-level pins are currently hidden. Type /fqp trivial to show them."])
         end
         return
     end
@@ -990,6 +1017,8 @@ function ns.PrintSettingsDebug()
         "showUnexplored",
         "showTrivial",
         "trivialLevelGap",
+        "trivialMinLevelEnabled",
+        "trivialMinLevel",
         "highLevelGap",
         "showRepeatable",
         "showSpawnClusters",
@@ -1599,7 +1628,7 @@ local function BuildMapPinsSettings(self)
         local gap = ns.GetOption("trivialLevelGap")
         control:SetValue(gap)
         trivialGapLabel:SetText((L["Hide quests %d+ levels below you"]):format(gap))
-        local enabled = not ns.GetOption("showTrivial")
+        local enabled = not ns.GetOption("showTrivial") or ns.GetOption("trivialMinLevelEnabled")
         control:EnableMouse(enabled)
         control:SetAlpha(enabled and 1 or 0.5)
         control.syncing = false
@@ -1613,8 +1642,52 @@ local function BuildMapPinsSettings(self)
     end)
     optionChecks[#optionChecks + 1] = trivialGap
 
+    local trivialMin = CreateOptionCheckbox(
+        self,
+        "trivialMinLevelEnabled",
+        L["Only show low-level quests at or above a minimum level"],
+        L["Works with Show low-level quests. Low-level quests below the level set by the slider stay hidden; low-level quests at or above it are shown."]
+    )
+    trivialMin:SetPoint("TOPLEFT", trivialGap, "BOTTOMLEFT", -8, -8)
+    local baseTrivialMinApply = trivialMin.ApplySaved
+    trivialMin.ApplySaved = function(control)
+        baseTrivialMinApply(control)
+        local enabled = ns.GetOption("showTrivial")
+        control:SetEnabled(enabled)
+        control.Text:SetAlpha(enabled and 1 or 0.5)
+    end
+    trivialMin:ApplySaved()
+
+    local trivialMinLevel = CreateFrame("Slider", nil, self, "OptionsSliderTemplate")
+    trivialMinLevel:SetPoint("TOPLEFT", trivialMin, "BOTTOMLEFT", 8, -22)
+    trivialMinLevel:SetSize(240, 16)
+    trivialMinLevel:SetMinMaxValues(TRIVIAL_MIN_LEVEL_MIN, TRIVIAL_MIN_LEVEL_MAX)
+    trivialMinLevel:SetValueStep(1)
+    if trivialMinLevel.Low then trivialMinLevel.Low:SetText(tostring(TRIVIAL_MIN_LEVEL_MIN)) end
+    if trivialMinLevel.High then trivialMinLevel.High:SetText(tostring(TRIVIAL_MIN_LEVEL_MAX)) end
+    local trivialMinLevelLabel = trivialMinLevel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    trivialMinLevelLabel:SetPoint("BOTTOM", trivialMinLevel, "TOP", 0, 4)
+    trivialMinLevel.ApplySaved = function(control)
+        control.syncing = true
+        local minLevel = ns.GetOption("trivialMinLevel")
+        control:SetValue(minLevel)
+        trivialMinLevelLabel:SetText((L["Low-level quests: only level %d and up"]):format(minLevel))
+        local enabled = ns.GetOption("showTrivial") and ns.GetOption("trivialMinLevelEnabled")
+        control:EnableMouse(enabled)
+        control:SetAlpha(enabled and 1 or 0.5)
+        control.syncing = false
+    end
+    trivialMinLevel:SetScript("OnValueChanged", function(control, value)
+        if control.syncing or NormalizeNumber("trivialMinLevel", value) == ns.GetOption("trivialMinLevel") then
+            return
+        end
+        ns.SetOption("trivialMinLevel", value)
+        control:ApplySaved()
+    end)
+    optionChecks[#optionChecks + 1] = trivialMinLevel
+
     local highLevelGap = CreateFrame("Slider", nil, self, "OptionsSliderTemplate")
-    highLevelGap:SetPoint("TOPLEFT", trivialGap, "BOTTOMLEFT", 0, -26)
+    highLevelGap:SetPoint("TOPLEFT", trivialMinLevel, "BOTTOMLEFT", 0, -26)
     highLevelGap:SetSize(240, 16)
     highLevelGap:SetMinMaxValues(HIGH_LEVEL_GAP_MIN, HIGH_LEVEL_GAP_MAX)
     highLevelGap:SetValueStep(1)
